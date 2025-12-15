@@ -1,0 +1,79 @@
+{
+    "name": "pyassist-ai",
+    "displayName": "PyAssist-AI",
+    "description": "Python AI Companion Extension powered by OpenAI",
+    "version": "0.0.1",
+    "publisher": "pyassist",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Machine Learning"
+    ],
+    "activationEvents": [
+        "onLanguage:python",
+        "onView:pyassist-sidebar"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "commands": [
+            {
+                "command": "pyassist.setApiKey",
+                "title": "PyAssist: Set API Key"
+            },
+            {
+                "command": "pyassist.scanForErrors",
+                "title": "PyAssist: Scan for Errors"
+            },
+            {
+                "command": "pyassist.improveCode",
+                "title": "PyAssist: Improve Code"
+            },
+            {
+                "command": "pyassist.generateCode",
+                "title": "PyAssist: Generate Code from Comment"
+            }
+        ],
+        "menus": {
+            "editor/context": [
+                {
+                    "command": "pyassist.improveCode",
+                    "when": "editorHasSelection && resourceLangId == python",
+                    "group": "modification"
+                }
+            ]
+        },
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "pyassist-activitybar",
+                    "title": "PyAssist AI",
+                    "icon": "$(hubot)"
+                }
+            ]
+        },
+        "views": {
+            "pyassist-activitybar": [
+                {
+                    "type": "webview",
+                    "id": "pyassist-sidebar",
+                    "name": "Chat"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./",
+        "watch": "tsc -watch -p ./"
+    },
+    "devDependencies": {
+        "@types/node": "^18.14.6",
+        "@types/vscode": "^1.80.0",
+        "typescript": "^5.3.3"
+    },
+    "dependencies": {
+        "@google/generative-ai": "^0.24.1"
+    }
+}

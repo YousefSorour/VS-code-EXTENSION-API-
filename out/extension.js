@@ -1,0 +1,163 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.activate = activate;
+exports.deactivate = deactivate;
+const vscode = __importStar(require("vscode"));
+const aiService_1 = require("./aiService");
+const sidebarProvider_1 = require("./providers/sidebarProvider");
+function activate(context) {
+    console.log('PyAssist-AI is now active!');
+    const secretStorage = context.secrets;
+    const aiService = new aiService_1.AIService(secretStorage);
+    // Register Sidebar Provider
+    const sidebarProvider = new sidebarProvider_1.SidebarProvider(context.extensionUri, aiService);
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider("pyassist-sidebar", sidebarProvider));
+    // Diagnostics Collection
+    const diagnosticCollection = vscode.languages.createDiagnosticCollection("pyassist");
+    context.subscriptions.push(diagnosticCollection);
+    // Command: Set API Key
+    context.subscriptions.push(vscode.commands.registerCommand('pyassist.setApiKey', async () => {
+        const key = await vscode.window.showInputBox({
+            prompt: 'Enter your Google Gemini API Key',
+            password: true,
+            ignoreFocusOut: true
+        });
+        if (key) {
+            await secretStorage.store("gemini_api_key", key);
+            vscode.window.showInformationMessage("API Key saved securely.");
+        }
+    }));
+    // Command: Scan for Errors
+    context.subscriptions.push(vscode.commands.registerCommand('pyassist.scanForErrors', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.languageId !== 'python') {
+            vscode.window.showWarningMessage("Please open a Python file to scan.");
+            return;
+        }
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "PyAssist: Scanning for errors...",
+            cancellable: false
+        }, async () => {
+            try {
+                const diagnostics = await aiService.analyzeCode(editor.document.getText());
+                diagnosticCollection.set(editor.document.uri, diagnostics);
+                if (diagnostics.length === 0) {
+                    vscode.window.showInformationMessage("No errors found!");
+                }
+                else {
+                    vscode.window.showWarningMessage(`Found ${diagnostics.length} issues.`);
+                }
+            }
+            catch (error) {
+                vscode.window.showErrorMessage(error.message);
+            }
+        });
+    }));
+    // Command: Improve Code (Refactoring)
+    context.subscriptions.push(vscode.commands.registerCommand('pyassist.improveCode', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor)
+            return;
+        const selection = editor.selection;
+        const text = editor.document.getText(selection);
+        if (!text) {
+            vscode.window.showWarningMessage("No code selected.");
+            return;
+        }
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "PyAssist: Improving code...",
+            cancellable: false
+        }, async () => {
+            try {
+                const improvedCode = await aiService.improveCode(text);
+                // Show Diff View
+                const originalDoc = await vscode.workspace.openTextDocument({ content: text, language: 'python' });
+                const improvedDoc = await vscode.workspace.openTextDocument({ content: improvedCode, language: 'python' });
+                vscode.commands.executeCommand('vscode.diff', originalDoc.uri, improvedDoc.uri, 'PyAssist Suggestion');
+            }
+            catch (error) {
+                vscode.window.showErrorMessage(error.message);
+            }
+        });
+    }));
+    // Command: Generate Code from Comment
+    context.subscriptions.push(vscode.commands.registerCommand('pyassist.generateCode', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor)
+            return;
+        const selection = editor.selection;
+        // If selection is empty, take the current line
+        const range = selection.isEmpty ? editor.document.lineAt(selection.active.line).range : selection;
+        const comment = editor.document.getText(range);
+        if (!comment.trim()) {
+            vscode.window.showWarningMessage("Please select a comment or place cursor on a comment line.");
+            return;
+        }
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "PyAssist: Generating code...",
+            cancellable: false
+        }, async () => {
+            try {
+                const generatedCode = await aiService.generateCode(comment);
+                editor.edit(editBuilder => {
+                    // Insert after the selection/line
+                    editBuilder.insert(range.end, "\n" + generatedCode);
+                });
+            }
+            catch (error) {
+                vscode.window.showErrorMessage(error.message);
+            }
+        });
+    }));
+    // Auto-scan on save
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async (document) => {
+        if (document.languageId === 'python') {
+            try {
+                // Re-using the logic from scanForErrors 
+                const diagnostics = await aiService.analyzeCode(document.getText());
+                diagnosticCollection.set(document.uri, diagnostics);
+            }
+            catch (e) {
+                console.error(e);
+            }
+        }
+    }));
+}
+function deactivate() { }
+//# sourceMappingURL=extension.js.map

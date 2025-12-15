@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src {{cspSource}}; script-src 'unsafe-inline';">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="{{styleMainUri}}" rel="stylesheet">
+    <title>PyAssist Chat</title>
+</head>
+<body>
+    <div class="chat-container">
+        <ul id="messages" class="messages">
+            <!-- Messages will be added here -->
+        </ul>
+        <div class="input-container">
+            <input type="text" id="messageInput" placeholder="Ask about your code..." />
+            <button id="sendButton">Send</button>
+        </div>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const messagesList = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+
+        sendButton.addEventListener('click', () => {
+            const text = messageInput.value;
+            if (text) {
+                vscode.postMessage({ type: 'sendMessage', value: text });
+                messageInput.value = '';
+            }
+        });
+
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const text = messageInput.value;
+                if (text) {
+                    vscode.postMessage({ type: 'sendMessage', value: text });
+                    messageInput.value = '';
+                }
+            }
+        });
+
+        window.addEventListener('message', event => {
+            const message = event.data;
+            switch (message.type) {
+                case 'addMessage':
+                    const li = document.createElement('li');
+                    li.textContent = message.value;
+                    li.className = message.isUser ? 'user-message' : 'bot-message';
+                    messagesList.appendChild(li);
+                    messagesList.scrollTop = messagesList.scrollHeight; // Auto scroll
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>

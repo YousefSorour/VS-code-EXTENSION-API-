@@ -48,12 +48,18 @@ export function activate(context: vscode.ExtensionContext) {
                 cancellable: false
             }, async () => {
                 try {
-                    const diagnostics = await aiService.analyzeCode(editor.document.getText());
+                    const { diagnostics, rawErrors } = await aiService.analyzeCode(editor.document.getText());
                     diagnosticCollection.set(editor.document.uri, diagnostics);
+
                     if (diagnostics.length === 0) {
                         vscode.window.showInformationMessage("No errors found!");
                     } else {
                         vscode.window.showWarningMessage(`Found ${diagnostics.length} issues.`);
+
+                        // Open JSON Report
+                        const reportContent = JSON.stringify({ errors: rawErrors }, null, 2);
+                        const doc = await vscode.workspace.openTextDocument({ content: reportContent, language: 'json' });
+                        await vscode.window.showTextDocument(doc, { preview: false, viewColumn: vscode.ViewColumn.Beside });
                     }
                 } catch (error: any) {
                     vscode.window.showErrorMessage(error.message);
@@ -135,7 +141,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (document.languageId === 'python') {
                 try {
                     // Re-using the logic from scanForErrors 
-                    const diagnostics = await aiService.analyzeCode(document.getText());
+                    const { diagnostics } = await aiService.analyzeCode(document.getText());
                     diagnosticCollection.set(document.uri, diagnostics);
                 } catch (e) {
                     console.error(e);

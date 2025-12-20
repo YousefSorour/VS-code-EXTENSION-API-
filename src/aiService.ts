@@ -2,8 +2,6 @@ import * as vscode from 'vscode';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export class AIService {
-    private genAI: GoogleGenerativeAI | undefined;
-
     constructor(private secretStorage: vscode.SecretStorage) { }
 
     private async getApiKey(): Promise<string | undefined> {
@@ -11,59 +9,90 @@ export class AIService {
     }
 
     private async initAI(): Promise<GoogleGenerativeAI> {
-        const apiKey = await this.getApiKey();
-        if (!apiKey) {
+        let apiKey = await this.getApiKey();
+        if (!apiKey || !apiKey.trim()) {
             throw new Error("Gemini API Key is not set. Please run 'PyAssist: Set API Key' command.");
         }
-        if (!this.genAI) {
-            this.genAI = new GoogleGenerativeAI(apiKey);
-        }
-        return this.genAI;
+        // Always create a new instance to ensure we use the latest key
+        return new GoogleGenerativeAI(apiKey.trim());
     }
 
-    public async analyzeCode(code: string): Promise<vscode.Diagnostic[]> {
+    private async generateText(prompt: string): Promise<string> {
         const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({
-            model: "gemini-flash-latest"
-        });
+        // Updated based on user's available model list
+        const modelsToTry = ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash"];
 
+        for (const modelName of modelsToTry) {
+            try {
+                const model = genAI.getGenerativeModel({ model: modelName });
+                const result = await model.generateContent(prompt);
+                const response = result.response;
+                return response.text();
+            } catch (error: any) {
+                console.warn(`Model ${modelName} failed:`, error);
+            }
+        }
+
+        // If all failed, try to list available models to help verify the key/access
+        const apiKey = await this.getApiKey();
+        let availableModels = "Could not fetch models";
+        try {
+            // @ts-ignore
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+            const data = await response.json() as any;
+            if (data.models) {
+                availableModels = (data.models as any[]).map((m: any) => m.name.replace('models/', '')).join(', ');
+            } else if (data.error) {
+                availableModels = `API Error: ${data.error.message}`;
+            }
+        } catch (err: any) {
+            availableModels = `Fetch Error: ${err.message}`;
+        }
+
+        const maskedKey = apiKey ? `Ends with: ...${apiKey.trim().slice(-4)}` : "Key is undefined";
+        throw new Error(`All Gemini models failed. API Response: [${availableModels}]. Key Debug: ${maskedKey}`);
+    }
+
+    public async analyzeCode(code: string): Promise<{ diagnostics: vscode.Diagnostic[], rawErrors: any[] }> {
         const prompt = `
         You are a Python code analyzer. Analyze the following code for logical errors, syntax issues, and potential runtime risks. 
         Return a JSON array of errors with the format: { "errors": [{ "line": number, "message": "string", "severity": "Error|Warning" }] }. 
         The line number should be 1-based. 
+        IMPORTANT: Return ONLY valid JSON.
         
         Code:
         ${code}
         `;
 
-        const result = await model.generateContent(prompt);
-        const response = result.response;
-        const text = response.text();
+        let text = await this.generateText(prompt);
 
-        if (!text) return [];
+        if (!text) return { diagnostics: [], rawErrors: [] };
+
+        // Clean up markdown if present
+        text = text.replace(/```json|```/g, "").trim();
 
         try {
             const parsed = JSON.parse(text);
             const errors = parsed.errors || parsed; // Handle both structure if model varies
 
-            if (!Array.isArray(errors)) return [];
+            if (!Array.isArray(errors)) return { diagnostics: [], rawErrors: [] };
 
-            return errors.map((err: any) => {
+            const diagnostics = errors.map((err: any) => {
                 const line = (err.line || 1) - 1; // Convert to 0-based
                 const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 100)); // Highlight full line
                 const severity = err.severity === "Error" ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
                 return new vscode.Diagnostic(range, err.message, severity);
             });
-        } catch (e) {
+
+            return { diagnostics, rawErrors: errors };
+
+        } catch (e: any) {
             console.error("Failed to parse Gemini response", e);
-            return [];
+            throw new Error("Failed to parse AI response. Please try again.");
         }
     }
 
     public async improveCode(code: string): Promise<string> {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
-
         const prompt = `
         You are a Python expert. Optimize the following code for time complexity, readability, and PEP8 standards. 
         Return ONLY the improved Python code, without markdown formatting or code blocks.
@@ -72,14 +101,11 @@ export class AIService {
         ${code}
         `;
 
-        const result = await model.generateContent(prompt);
-        return result.response.text().replace(/```python|```/g, "").trim();
+        const text = await this.generateText(prompt);
+        return text.replace(/```python|```/g, "").trim();
     }
 
     public async generateCode(comment: string): Promise<string> {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
-
         const prompt = `
         You are a Python code generator. Generate Python code based on the following comment/request. 
         Return ONLY the code, without explanation or markdown blocks.
@@ -88,14 +114,11 @@ export class AIService {
         ${comment}
         `;
 
-        const result = await model.generateContent(prompt);
-        return result.response.text().replace(/```python|```/g, "").trim();
+        const text = await this.generateText(prompt);
+        return text.replace(/```python|```/g, "").trim();
     }
 
     public async chat(message: string, codeContext: string): Promise<string> {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
-
         const prompt = `
         System: You are a helpful assistant for a Python developer. You answer questions about the code.
         Current Code Context:
@@ -104,7 +127,6 @@ export class AIService {
         User: ${message}
         `;
 
-        const result = await model.generateContent(prompt);
-        return result.response.text();
+        return await this.generateText(prompt);
     }
 }

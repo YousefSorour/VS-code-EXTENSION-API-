@@ -44,53 +44,82 @@ class AIService {
         return await this.secretStorage.get("gemini_api_key");
     }
     async initAI() {
-        const apiKey = await this.getApiKey();
-        if (!apiKey) {
+        let apiKey = await this.getApiKey();
+        if (!apiKey || !apiKey.trim()) {
             throw new Error("Gemini API Key is not set. Please run 'PyAssist: Set API Key' command.");
         }
-        if (!this.genAI) {
-            this.genAI = new generative_ai_1.GoogleGenerativeAI(apiKey);
+        // Always create a new instance to ensure we use the latest key
+        return new generative_ai_1.GoogleGenerativeAI(apiKey.trim());
+    }
+    async generateText(prompt) {
+        const genAI = await this.initAI();
+        // Updated based on user's available model list
+        const modelsToTry = ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash"];
+        for (const modelName of modelsToTry) {
+            try {
+                const model = genAI.getGenerativeModel({ model: modelName });
+                const result = await model.generateContent(prompt);
+                const response = result.response;
+                return response.text();
+            }
+            catch (error) {
+                console.warn(`Model ${modelName} failed:`, error);
+            }
         }
-        return this.genAI;
+        // If all failed, try to list available models to help verify the key/access
+        const apiKey = await this.getApiKey();
+        let availableModels = "Could not fetch models";
+        try {
+            // @ts-ignore
+            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+            const data = await response.json();
+            if (data.models) {
+                availableModels = data.models.map((m) => m.name.replace('models/', '')).join(', ');
+            }
+            else if (data.error) {
+                availableModels = `API Error: ${data.error.message}`;
+            }
+        }
+        catch (err) {
+            availableModels = `Fetch Error: ${err.message}`;
+        }
+        const maskedKey = apiKey ? `Ends with: ...${apiKey.trim().slice(-4)}` : "Key is undefined";
+        throw new Error(`All Gemini models failed. API Response: [${availableModels}]. Key Debug: ${maskedKey}`);
     }
     async analyzeCode(code) {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({
-            model: "gemini-flash-latest"
-        });
         const prompt = `
         You are a Python code analyzer. Analyze the following code for logical errors, syntax issues, and potential runtime risks. 
         Return a JSON array of errors with the format: { "errors": [{ "line": number, "message": "string", "severity": "Error|Warning" }] }. 
         The line number should be 1-based. 
+        IMPORTANT: Return ONLY valid JSON.
         
         Code:
         ${code}
         `;
-        const result = await model.generateContent(prompt);
-        const response = result.response;
-        const text = response.text();
+        let text = await this.generateText(prompt);
         if (!text)
-            return [];
+            return { diagnostics: [], rawErrors: [] };
+        // Clean up markdown if present
+        text = text.replace(/```json|```/g, "").trim();
         try {
             const parsed = JSON.parse(text);
             const errors = parsed.errors || parsed; // Handle both structure if model varies
             if (!Array.isArray(errors))
-                return [];
-            return errors.map((err) => {
+                return { diagnostics: [], rawErrors: [] };
+            const diagnostics = errors.map((err) => {
                 const line = (err.line || 1) - 1; // Convert to 0-based
                 const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 100)); // Highlight full line
                 const severity = err.severity === "Error" ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
                 return new vscode.Diagnostic(range, err.message, severity);
             });
+            return { diagnostics, rawErrors: errors };
         }
         catch (e) {
             console.error("Failed to parse Gemini response", e);
-            return [];
+            throw new Error("Failed to parse AI response. Please try again.");
         }
     }
     async improveCode(code) {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
         const prompt = `
         You are a Python expert. Optimize the following code for time complexity, readability, and PEP8 standards. 
         Return ONLY the improved Python code, without markdown formatting or code blocks.
@@ -98,12 +127,10 @@ class AIService {
         Code:
         ${code}
         `;
-        const result = await model.generateContent(prompt);
-        return result.response.text().replace(/```python|```/g, "").trim();
+        const text = await this.generateText(prompt);
+        return text.replace(/```python|```/g, "").trim();
     }
     async generateCode(comment) {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
         const prompt = `
         You are a Python code generator. Generate Python code based on the following comment/request. 
         Return ONLY the code, without explanation or markdown blocks.
@@ -111,12 +138,10 @@ class AIService {
         Request:
         ${comment}
         `;
-        const result = await model.generateContent(prompt);
-        return result.response.text().replace(/```python|```/g, "").trim();
+        const text = await this.generateText(prompt);
+        return text.replace(/```python|```/g, "").trim();
     }
     async chat(message, codeContext) {
-        const genAI = await this.initAI();
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
         const prompt = `
         System: You are a helpful assistant for a Python developer. You answer questions about the code.
         Current Code Context:
@@ -124,8 +149,7 @@ class AIService {
         
         User: ${message}
         `;
-        const result = await model.generateContent(prompt);
-        return result.response.text();
+        return await this.generateText(prompt);
     }
 }
 exports.AIService = AIService;

@@ -53,8 +53,22 @@ class AIService {
     }
     async generateText(prompt) {
         const genAI = await this.initAI();
-        // Updated based on user's available model list
-        const modelsToTry = ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-flash-latest", "gemini-pro-latest", "gemini-2.5-flash"];
+        // Updated based on user's available model list and rate limit errors
+        const modelsToTry = [
+            "gemini-2.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-2.0-flash-lite-001",
+            "gemini-2.0-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash-lite-preview-02-05",
+            "gemini-2.0-flash-lite",
+            "gemini-flash-latest",
+            "gemini-pro-latest",
+            "gemini-2.0-flash-exp",
+            "gemini-2.5-pro"
+        ];
+        let lastError = null;
+        let errorLog = [];
         for (const modelName of modelsToTry) {
             try {
                 const model = genAI.getGenerativeModel({ model: modelName });
@@ -64,10 +78,18 @@ class AIService {
             }
             catch (error) {
                 console.warn(`Model ${modelName} failed:`, error);
+                lastError = error;
+                errorLog.push(`${modelName}: ${error.message}`);
             }
         }
-        // If all failed, try to list available models to help verify the key/access
+        // Check if we hit rate limits (429)
+        const isRateLimit = errorLog.some(e => e.includes("429") || e.includes("Too Many Requests"));
         const apiKey = await this.getApiKey();
+        const maskedKey = apiKey ? `Ends with: ...${apiKey.trim().slice(-4)}` : "Key is undefined";
+        if (isRateLimit) {
+            throw new Error(`Quota Exceeded (429). Please wait a moment or check your API billing. Key: ${maskedKey}`);
+        }
+        // Fallback for other errors
         let availableModels = "Could not fetch models";
         try {
             // @ts-ignore
@@ -83,8 +105,17 @@ class AIService {
         catch (err) {
             availableModels = `Fetch Error: ${err.message}`;
         }
-        const maskedKey = apiKey ? `Ends with: ...${apiKey.trim().slice(-4)}` : "Key is undefined";
-        throw new Error(`All Gemini models failed. API Response: [${availableModels}]. Key Debug: ${maskedKey}`);
+        const detailedErrors = errorLog.join(" | ");
+        throw new Error(`All Gemini models failed. \nKey: ${maskedKey} \nErrors: [${detailedErrors}] \nAvailable Models: [${availableModels}]`);
+    }
+    cleanResponse(text) {
+        // Remove markdown code blocks if present
+        const match = text.match(/```(?:\w+)?\s*([\s\S]*?)\s*```/);
+        if (match) {
+            return match[1].trim();
+        }
+        // Fallback: just strip common markdown markers if regex didn't catch a block
+        return text.replace(/```python|```/g, "").trim();
     }
     async analyzeCode(code) {
         const prompt = `
@@ -100,7 +131,7 @@ class AIService {
         if (!text)
             return { diagnostics: [], rawErrors: [] };
         // Clean up markdown if present
-        text = text.replace(/```json|```/g, "").trim();
+        text = this.cleanResponse(text);
         try {
             const parsed = JSON.parse(text);
             const errors = parsed.errors || parsed; // Handle both structure if model varies
@@ -122,24 +153,26 @@ class AIService {
     async improveCode(code) {
         const prompt = `
         You are a Python expert. Optimize the following code for time complexity, readability, and PEP8 standards. 
-        Return ONLY the improved Python code, without markdown formatting or code blocks.
+        IMPORTANT: Return ONLY the raw Python code. Do NOT start with "Here is the code" or typical conversational filler. 
+        Do NOT use markdown code blocks if possible, but if you do, ensure they are standard.
         
         Code:
         ${code}
         `;
         const text = await this.generateText(prompt);
-        return text.replace(/```python|```/g, "").trim();
+        return this.cleanResponse(text);
     }
     async generateCode(comment) {
         const prompt = `
         You are a Python code generator. Generate Python code based on the following comment/request. 
-        Return ONLY the code, without explanation or markdown blocks.
+        IMPORTANT: Return ONLY the raw Python code. Do NOT provide explanations, introductory text, or concluding remarks.
+        Just the code.
         
         Request:
         ${comment}
         `;
         const text = await this.generateText(prompt);
-        return text.replace(/```python|```/g, "").trim();
+        return this.cleanResponse(text);
     }
     async chat(message, codeContext) {
         const prompt = `
